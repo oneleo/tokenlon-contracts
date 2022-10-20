@@ -15,10 +15,13 @@ import "contracts-test/utils/BalanceSnapshot.sol";
 import "contracts-test/utils/StrategySharedSetup.sol";
 import { getEIP712Hash } from "contracts-test/utils/Sig.sol";
 
+import "forge-std/console2.sol";
+
 contract RFQTest is StrategySharedSetup {
     using SafeMath for uint256;
     using BalanceSnapshot for BalanceSnapshot.Snapshot;
 
+    // BPS_MAX must be the same as LibConstant.BPS_MAX
     uint256 constant BPS_MAX = 10000;
     event FillOrder(
         string source,
@@ -48,6 +51,7 @@ contract RFQTest is StrategySharedSetup {
     MockERC1271Wallet mockERC1271Wallet;
     MarketMakerProxy marketMakerProxy;
     RFQ rfq;
+
     MockWETH weth = new MockWETH("Wrapped ETH", "WETH", 18);
     IERC20 usdt = new MockERC20("USDT", "USDT", 6);
     IERC20 dai = new MockERC20("DAI", "DAI", 18);
@@ -55,6 +59,10 @@ contract RFQTest is StrategySharedSetup {
 
     uint256 DEADLINE = block.timestamp + 1;
     RFQLibEIP712.Order DEFAULT_ORDER;
+
+    SpenderLibEIP712.SpendWithPermit DEFAULT_SPEND_MAKER_ASSET_TO_RECEIVER;
+    SpenderLibEIP712.SpendWithPermit DEFAULT_SPEND_TAKER_ASSET_TO_MAKER;
+    SpenderLibEIP712.SpendWithPermit DEFAULT_SPEND_MAKER_ASSET_TO_MSGSENDER;
 
     // effectively a "beforeEach" block
     function setUp() public {
@@ -97,6 +105,46 @@ contract RFQTest is StrategySharedSetup {
             DEADLINE, // deadline
             0 // feeFactor
         );
+
+        // maker (= mm) order -> receiver recive token except fee
+        // taker (= user) transaction (= fill) -> maker recive token
+
+        // Transfer maker asset to taker, sub fee
+        uint256 DEFAULT_FEE = DEFAULT_ORDER.makerAssetAmount.mul(DEFAULT_ORDER.feeFactor).div(BPS_MAX);
+        uint256 DEFAULT_SETTLE_AMOUNT = DEFAULT_ORDER.makerAssetAmount;
+        if (DEFAULT_FEE > 0) {
+            DEFAULT_SETTLE_AMOUNT = DEFAULT_SETTLE_AMOUNT.sub(DEFAULT_FEE);
+        }
+
+        DEFAULT_SPEND_MAKER_ASSET_TO_RECEIVER = SpenderLibEIP712.SpendWithPermit({
+            tokenAddr: DEFAULT_ORDER.makerAssetAddr,
+            requester: address(rfq),
+            user: DEFAULT_ORDER.makerAddr,
+            recipient: DEFAULT_ORDER.receiverAddr,
+            amount: DEFAULT_SETTLE_AMOUNT,
+            salt: DEFAULT_ORDER.salt,
+            expiry: uint64(DEFAULT_ORDER.deadline)
+        });
+
+        DEFAULT_SPEND_TAKER_ASSET_TO_MAKER = SpenderLibEIP712.SpendWithPermit({
+            tokenAddr: DEFAULT_ORDER.takerAssetAddr,
+            requester: address(rfq),
+            user: DEFAULT_ORDER.takerAddr,
+            recipient: DEFAULT_ORDER.makerAddr,
+            amount: DEFAULT_ORDER.takerAssetAmount,
+            salt: DEFAULT_ORDER.salt,
+            expiry: uint64(DEFAULT_ORDER.deadline)
+        });
+
+        DEFAULT_SPEND_MAKER_ASSET_TO_MSGSENDER = SpenderLibEIP712.SpendWithPermit({
+            tokenAddr: DEFAULT_ORDER.makerAssetAddr,
+            requester: address(rfq),
+            user: DEFAULT_ORDER.makerAddr,
+            recipient: address(this),
+            amount: DEFAULT_SETTLE_AMOUNT,
+            salt: DEFAULT_ORDER.salt,
+            expiry: uint64(DEFAULT_ORDER.deadline)
+        });
 
         // Label addresses for easier debugging
         vm.label(user, "User");
@@ -235,175 +283,177 @@ contract RFQTest is StrategySharedSetup {
      *          Test: fill          *
      *********************************/
 
-    function testCannotFillWithExpiredOrder() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        order.deadline = block.timestamp - 1;
-        bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory userSig = _signFill(otherPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // function testCannotFillWithExpiredOrder() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     order.deadline = block.timestamp - 1;
+    //     bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory userSig = _signFill(otherPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        vm.expectRevert("RFQ: expired order");
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
-    }
+    //     vm.expectRevert("RFQ: expired order");
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
+    // }
 
-    function testCannotFillWithInvalidUserSig() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory userSig = _signFill(otherPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // function testCannotFillWithInvalidUserSig() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory userSig = _signFill(otherPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        vm.expectRevert("RFQ: invalid user signature");
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
-    }
+    //     vm.expectRevert("RFQ: invalid user signature");
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
+    // }
 
-    function testCannotFillWithInvalidUserWallet() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        // Taker is an EOA but user signs a Wallet type fill
-        bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.WalletBytes32);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // function testCannotFillWithInvalidUserWallet() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     // Taker is an EOA but user signs a Wallet type fill
+    //     bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.WalletBytes32);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        vm.expectRevert(); // No revert string in this case
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
-    }
+    //     vm.expectRevert(); // No revert string in this case
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
+    // }
 
-    function testCannotFillWithInvalidMakerSig() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        bytes memory makerSig = _signOrder(otherPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // function testCannotFillWithInvalidMakerSig() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     bytes memory makerSig = _signOrder(otherPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        vm.expectRevert("RFQ: invalid MM signature");
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
-    }
+    //     vm.expectRevert("RFQ: invalid MM signature");
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
+    // }
 
-    function testFillDAIToUSDT_EOAUserAndEOAMaker() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // function testFillDAIToUSDT_EOAUserAndEOAMaker() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        BalanceSnapshot.Snapshot memory userTakerAsset = BalanceSnapshot.take(user, order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, order.makerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerTakerAsset = BalanceSnapshot.take(maker, order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerMakerAsset = BalanceSnapshot.take(maker, order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory userTakerAsset = BalanceSnapshot.take(user, order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerTakerAsset = BalanceSnapshot.take(maker, order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerMakerAsset = BalanceSnapshot.take(maker, order.makerAssetAddr);
 
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
 
-        userTakerAsset.assertChange(-int256(order.takerAssetAmount));
-        receiverMakerAsset.assertChange(int256(order.makerAssetAmount));
-        makerTakerAsset.assertChange(int256(order.takerAssetAmount));
-        makerMakerAsset.assertChange(-int256(order.makerAssetAmount));
-    }
+    //     userTakerAsset.assertChange(-int256(order.takerAssetAmount));
+    //     receiverMakerAsset.assertChange(int256(order.makerAssetAmount));
+    //     makerTakerAsset.assertChange(int256(order.takerAssetAmount));
+    //     makerMakerAsset.assertChange(-int256(order.makerAssetAmount));
+    // }
 
-    function testFillDAIToUSDT_EOAUserAndEOAMaker_WithOldEIP712Method() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        bytes memory makerSig = _signOrderWithOldEIP712Method(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory userSig = _signFillWithOldEIP712Method(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // function testFillDAIToUSDT_EOAUserAndEOAMaker_WithOldEIP712Method() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     bytes memory makerSig = _signOrderWithOldEIP712Method(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory userSig = _signFillWithOldEIP712Method(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        BalanceSnapshot.Snapshot memory userTakerAsset = BalanceSnapshot.take(user, order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, order.makerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerTakerAsset = BalanceSnapshot.take(maker, order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerMakerAsset = BalanceSnapshot.take(maker, order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory userTakerAsset = BalanceSnapshot.take(user, order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerTakerAsset = BalanceSnapshot.take(maker, order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerMakerAsset = BalanceSnapshot.take(maker, order.makerAssetAddr);
 
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
 
-        userTakerAsset.assertChange(-int256(order.takerAssetAmount));
-        receiverMakerAsset.assertChange(int256(order.makerAssetAmount));
-        makerTakerAsset.assertChange(int256(order.takerAssetAmount));
-        makerMakerAsset.assertChange(-int256(order.makerAssetAmount));
-    }
+    //     userTakerAsset.assertChange(-int256(order.takerAssetAmount));
+    //     receiverMakerAsset.assertChange(int256(order.makerAssetAmount));
+    //     makerTakerAsset.assertChange(int256(order.takerAssetAmount));
+    //     makerMakerAsset.assertChange(-int256(order.makerAssetAmount));
+    // }
 
-    function testFillETHToUSDT_EOAUserAndMMPMaker() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        order.takerAssetAddr = address(weth);
-        order.takerAssetAmount = 1 ether;
-        order.makerAddr = address(marketMakerProxy);
-        bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.Wallet);
-        bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // function testFillETHToUSDT_EOAUserAndMMPMaker() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     order.takerAssetAddr = address(weth);
+    //     order.takerAssetAmount = 1 ether;
+    //     order.makerAddr = address(marketMakerProxy);
+    //     bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.Wallet);
+    //     bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        BalanceSnapshot.Snapshot memory userTakerAsset = BalanceSnapshot.take(user, ETH_ADDRESS);
-        BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, order.makerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerMMPTakerAsset = BalanceSnapshot.take(address(marketMakerProxy), order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerMMPMakerAsset = BalanceSnapshot.take(address(marketMakerProxy), order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory userTakerAsset = BalanceSnapshot.take(user, ETH_ADDRESS);
+    //     BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerMMPTakerAsset = BalanceSnapshot.take(address(marketMakerProxy), order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerMMPMakerAsset = BalanceSnapshot.take(address(marketMakerProxy), order.makerAssetAddr);
 
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ{ value: order.takerAssetAmount }(payload);
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ{ value: order.takerAssetAmount }(payload);
 
-        userTakerAsset.assertChange(-int256(order.takerAssetAmount));
-        receiverMakerAsset.assertChange(int256(order.makerAssetAmount));
-        makerMMPTakerAsset.assertChange(int256(order.takerAssetAmount));
-        makerMMPMakerAsset.assertChange(-int256(order.makerAssetAmount));
-    }
+    //     userTakerAsset.assertChange(-int256(order.takerAssetAmount));
+    //     receiverMakerAsset.assertChange(int256(order.makerAssetAmount));
+    //     makerMMPTakerAsset.assertChange(int256(order.takerAssetAmount));
+    //     makerMMPMakerAsset.assertChange(-int256(order.makerAssetAmount));
+    // }
 
-    function testFillDAIToETH_WalletUserAndMMPMaker() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        order.takerAddr = address(mockERC1271Wallet);
-        order.makerAddr = address(marketMakerProxy);
-        order.makerAssetAddr = address(weth);
-        order.makerAssetAmount = 1 ether;
-        bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.Wallet);
-        bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.WalletBytes32);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // ********** 2th spenderPermit ********** //
+    // function testFillDAIToETH_WalletUserAndMMPMaker() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     order.takerAddr = address(mockERC1271Wallet);
+    //     order.makerAddr = address(marketMakerProxy);
+    //     order.makerAssetAddr = address(weth);
+    //     order.makerAssetAmount = 1 ether;
+    //     bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.Wallet);
+    //     bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.WalletBytes32);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        BalanceSnapshot.Snapshot memory userWalletTakerAsset = BalanceSnapshot.take(address(mockERC1271Wallet), order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, ETH_ADDRESS);
-        BalanceSnapshot.Snapshot memory makerMMPTakerAsset = BalanceSnapshot.take(address(marketMakerProxy), order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerMMPMakerAsset = BalanceSnapshot.take(address(marketMakerProxy), order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory userWalletTakerAsset = BalanceSnapshot.take(address(mockERC1271Wallet), order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, ETH_ADDRESS);
+    //     BalanceSnapshot.Snapshot memory makerMMPTakerAsset = BalanceSnapshot.take(address(marketMakerProxy), order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerMMPMakerAsset = BalanceSnapshot.take(address(marketMakerProxy), order.makerAssetAddr);
 
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
 
-        userWalletTakerAsset.assertChange(-int256(order.takerAssetAmount));
-        receiverMakerAsset.assertChange(int256(order.makerAssetAmount));
-        makerMMPTakerAsset.assertChange(int256(order.takerAssetAmount));
-        makerMMPMakerAsset.assertChange(-int256(order.makerAssetAmount));
-    }
+    //     userWalletTakerAsset.assertChange(-int256(order.takerAssetAmount));
+    //     receiverMakerAsset.assertChange(int256(order.makerAssetAmount));
+    //     makerMMPTakerAsset.assertChange(int256(order.takerAssetAmount));
+    //     makerMMPMakerAsset.assertChange(-int256(order.makerAssetAmount));
+    // }
 
-    function testFillAccrueFeeToFeeCollector() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        order.feeFactor = 1000; // 10% fee
-        bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // ********* order.feeFactor: 4th spenderPermit
+    // function testFillAccrueFeeToFeeCollector() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     order.feeFactor = 1000; // 10% fee
+    //     bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        BalanceSnapshot.Snapshot memory userTakerAsset = BalanceSnapshot.take(user, order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, order.makerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerTakerAsset = BalanceSnapshot.take(maker, order.takerAssetAddr);
-        BalanceSnapshot.Snapshot memory makerMakerAsset = BalanceSnapshot.take(maker, order.makerAssetAddr);
-        BalanceSnapshot.Snapshot memory feeCollectorMakerAsset = BalanceSnapshot.take(feeCollector, order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory userTakerAsset = BalanceSnapshot.take(user, order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory receiverMakerAsset = BalanceSnapshot.take(receiver, order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerTakerAsset = BalanceSnapshot.take(maker, order.takerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory makerMakerAsset = BalanceSnapshot.take(maker, order.makerAssetAddr);
+    //     BalanceSnapshot.Snapshot memory feeCollectorMakerAsset = BalanceSnapshot.take(feeCollector, order.makerAssetAddr);
 
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
 
-        userTakerAsset.assertChange(-int256(order.takerAssetAmount));
-        receiverMakerAsset.assertChange(int256(order.makerAssetAmount.mul(90).div(100))); // 10% fee taken from maker asset
-        makerTakerAsset.assertChange(int256(order.takerAssetAmount));
-        makerMakerAsset.assertChange(-int256(order.makerAssetAmount));
-        feeCollectorMakerAsset.assertChange(int256(order.makerAssetAmount.mul(10).div(100))); // 10% fee
-    }
+    //     userTakerAsset.assertChange(-int256(order.takerAssetAmount));
+    //     receiverMakerAsset.assertChange(int256(order.makerAssetAmount.mul(90).div(100))); // 10% fee taken from maker asset
+    //     makerTakerAsset.assertChange(int256(order.takerAssetAmount));
+    //     makerMakerAsset.assertChange(-int256(order.makerAssetAmount));
+    //     feeCollectorMakerAsset.assertChange(int256(order.makerAssetAmount.mul(10).div(100))); // 10% fee
+    // }
 
-    function testCannotFillWithSamePayloadAgain() public {
-        RFQLibEIP712.Order memory order = DEFAULT_ORDER;
-        bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+    // function testCannotFillWithSamePayloadAgain() public {
+    //     RFQLibEIP712.Order memory order = DEFAULT_ORDER;
+    //     bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
+    //     bytes memory payload = _genFillPayload(order, makerSig, userSig);
 
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
 
-        vm.expectRevert("PermanentStorage: transaction seen before");
-        vm.prank(user, user); // Only EOA
-        userProxy.toRFQ(payload);
-    }
+    //     vm.expectRevert("PermanentStorage: transaction seen before");
+    //     vm.prank(user, user); // Only EOA
+    //     userProxy.toRFQ(payload);
+    // }
 
     /*********************************
      *       Test: emit event        *
@@ -427,11 +477,40 @@ contract RFQTest is StrategySharedSetup {
         );
     }
 
+    // maker (= mm) order -> receiver recive token except fee
+    // taker (= user) transaction (= fill) -> maker recive token
     function testEmitSwappedEvent() public {
         RFQLibEIP712.Order memory order = DEFAULT_ORDER;
         bytes memory makerSig = _signOrder(makerPrivateKey, order, SignatureValidator.SignatureType.EIP712);
         bytes memory userSig = _signFill(userPrivateKey, order, SignatureValidator.SignatureType.EIP712);
-        bytes memory payload = _genFillPayload(order, makerSig, userSig);
+
+        SpenderLibEIP712.SpendWithPermit memory spendMakerAssetToReceiver = DEFAULT_SPEND_MAKER_ASSET_TO_RECEIVER;
+        SpenderLibEIP712.SpendWithPermit memory spendTakerAssetToMaker = DEFAULT_SPEND_TAKER_ASSET_TO_MAKER;
+        SpenderLibEIP712.SpendWithPermit memory spendMakerAssetToMsgSender = DEFAULT_SPEND_MAKER_ASSET_TO_MSGSENDER;
+
+        bytes memory spendMakerAssetToReceiverSig = _signSpendWithPermit(makerPrivateKey, spendMakerAssetToReceiver);
+        bytes memory spendTakerAssetToMakerSig = _signSpendWithPermit(userPrivateKey, spendTakerAssetToMaker);
+        bytes memory spendMakerAssetToMsgSenderSig = _signSpendWithPermit(makerPrivateKey, spendMakerAssetToMsgSender);
+
+        console2.logString("---------- [Before] PrivateKey Address ----------");
+        console2.logAddress(maker);
+        console2.logAddress(user);
+        console2.logString("---------- [Before] Sig ----------");
+        console2.logBytes(spendMakerAssetToReceiverSig);
+        console2.logBytes(spendTakerAssetToMakerSig);
+        console2.logString("---------- [Before] msg.sender ----------");
+        console2.logAddress(address(this));
+        console2.logAddress(user);
+
+        bytes memory payload = _genFillPayload(
+            order,
+            spendMakerAssetToReceiver,
+            spendTakerAssetToMaker,
+            makerSig,
+            userSig,
+            spendMakerAssetToReceiverSig,
+            spendTakerAssetToMakerSig
+        );
 
         _expectEvent(order);
         vm.prank(user, user); // Only EOA
@@ -498,11 +577,58 @@ contract RFQTest is StrategySharedSetup {
         sig = abi.encodePacked(r, s, v, bytes32(0), uint8(sigType));
     }
 
+    // transaction (= fill) with taker (= user)
+    // order with maker (= mm)
+    function _getEIP712Hash(bytes32 structHash) internal view returns (bytes32) {
+        string memory EIP191_HEADER = "\x19\x01";
+        bytes32 EIP712_DOMAIN_SEPARATOR = spender.EIP712_DOMAIN_SEPARATOR();
+        console2.logString("---------- EIP712_DOMAIN_SEPARATOR ----------");
+        console2.logBytes32(EIP712_DOMAIN_SEPARATOR);
+        return keccak256(abi.encodePacked(EIP191_HEADER, EIP712_DOMAIN_SEPARATOR, structHash));
+    }
+
+    function _signSpendWithPermit(uint256 privateKey, SpenderLibEIP712.SpendWithPermit memory spendWithPermit) internal returns (bytes memory sig) {
+        uint256 SPEND_WITH_PERMIT_TYPEHASH = 0xab1af22032364b17f69bad7eabde29f0cd3f761861c0343407be7fcac2e3ff1f;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SPEND_WITH_PERMIT_TYPEHASH,
+                spendWithPermit.tokenAddr,
+                spendWithPermit.requester,
+                spendWithPermit.user,
+                spendWithPermit.recipient,
+                spendWithPermit.amount,
+                spendWithPermit.salt,
+                spendWithPermit.expiry
+            )
+        );
+        bytes32 spendWithPermitHash = _getEIP712Hash(structHash);
+        console2.logString("---------- structHash & spendWithPermitHash----------");
+        console2.logBytes32(structHash);
+        console2.logBytes32(spendWithPermitHash);
+        console2.logUint(privateKey);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, spendWithPermitHash);
+        sig = abi.encodePacked(r, s, v, bytes32(0), uint8(2)); // SignatureType = 2 = EIP712
+    }
+
     function _genFillPayload(
         RFQLibEIP712.Order memory order,
+        SpenderLibEIP712.SpendWithPermit memory spendMakerAssetToReceiver,
+        SpenderLibEIP712.SpendWithPermit memory spendTakerAssetToMaker,
         bytes memory makerSig,
-        bytes memory userSig
+        bytes memory userSig,
+        bytes memory spendMakerAssetToReceiverSig,
+        bytes memory spendTakerAssetToMakerSig
     ) internal view returns (bytes memory payload) {
-        return abi.encodeWithSelector(rfq.fill.selector, order, makerSig, userSig);
+        return
+            abi.encodeWithSelector(
+                rfq.fill.selector,
+                order,
+                spendMakerAssetToReceiver,
+                spendTakerAssetToMaker,
+                makerSig,
+                userSig,
+                spendMakerAssetToReceiverSig,
+                spendTakerAssetToMakerSig
+            );
     }
 }
