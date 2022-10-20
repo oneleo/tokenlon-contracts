@@ -75,15 +75,7 @@ contract TestAMMWrapperWithPath is StrategySharedSetup {
         // Set token balance and approve
         setEOABalanceAndApprove(user, tokens, uint256(100));
 
-        ammQuoter = new AMMQuoter(
-            UNISWAP_V2_ADDRESS,
-            UNISWAP_V3_ADDRESS,
-            UNISWAP_V3_QUOTER_ADDRESS,
-            SUSHISWAP_ADDRESS,
-            BALANCER_V2_ADDRESS,
-            IPermanentStorage(permanentStorage),
-            address(weth)
-        );
+        ammQuoter = new AMMQuoter(IPermanentStorage(permanentStorage), address(weth));
 
         // Default order
         DEFAULT_ORDER = AMMLibEIP712.Order(
@@ -125,15 +117,15 @@ contract TestAMMWrapperWithPath is StrategySharedSetup {
     // Deploy the strategy contract by overriding the StrategySharedSetup.sol deployment function
     function _deployStrategyAndUpgrade() internal override returns (address) {
         ammWrapperWithPath = new AMMWrapperWithPath(
-            address(this), // This contract would be the owner
-            address(userProxy),
-            address(weth),
-            address(permanentStorage),
-            address(spender),
+            address(this), // This contract would be the operator
             DEFAULT_FEE_FACTOR,
+            address(userProxy),
+            ISpender(address(spender)),
+            permanentStorage,
+            IWETH(address(weth)),
             UNISWAP_V2_ADDRESS,
-            UNISWAP_V3_ADDRESS,
             SUSHISWAP_ADDRESS,
+            UNISWAP_V3_ADDRESS,
             BALANCER_V2_ADDRESS,
             feeCollector
         );

@@ -4,9 +4,9 @@ pragma solidity 0.7.6;
 import "contracts-test/forkMainnet/AMMWrapper/Setup.t.sol";
 
 contract TestAMMWrapperSetFeeCollector is TestAMMWrapper {
-    function testCannotSetFeeCollectorByNotOwner() public {
+    function testCannotSetFeeCollectorByNotOperator() public {
         vm.prank(user);
-        vm.expectRevert("not owner");
+        vm.expectRevert("AMMWrapper: not the operator");
         ammWrapper.setFeeCollector(user);
     }
 

@@ -111,11 +111,11 @@ contract RFQTest is StrategySharedSetup {
 
     function _deployStrategyAndUpgrade() internal override returns (address) {
         rfq = new RFQ(
-            address(this), // This contract would be the owner
+            address(this), // This contract would be the operator
             address(userProxy),
-            address(weth),
-            address(permanentStorage),
-            address(spender),
+            ISpender(address(spender)),
+            permanentStorage,
+            IWETH(address(weth)),
             feeCollector
         );
         // Setup
@@ -139,7 +139,7 @@ contract RFQTest is StrategySharedSetup {
     }
 
     function testSetupRFQ() public {
-        assertEq(rfq.owner(), address(this));
+        assertEq(rfq.operator(), address(this));
         assertEq(rfq.userProxy(), address(userProxy));
         assertEq(address(rfq.spender()), address(spender));
         assertEq(address(rfq.weth()), address(weth));
@@ -153,14 +153,14 @@ contract RFQTest is StrategySharedSetup {
      *     Test: upgradeSpender      *
      *********************************/
 
-    function testCannotUpgradeSpenderByNotOwner() public {
-        vm.expectRevert("not owner");
+    function testCannotUpgradeSpenderByNotOperator() public {
+        vm.expectRevert("RFQ: not operator");
         vm.prank(user);
         rfq.upgradeSpender(user);
     }
 
     function testCannotUpgradeSpenderToZeroAddress() public {
-        vm.expectRevert("Strategy: spender can not be zero address");
+        vm.expectRevert("RFQ: spender can not be zero address");
         rfq.upgradeSpender(address(0));
     }
 
@@ -173,14 +173,14 @@ contract RFQTest is StrategySharedSetup {
      *   Test: set/close allowance   *
      *********************************/
 
-    function testCannotSetAllowanceCloseAllowanceByNotOwner() public {
+    function testCannotSetAllowanceCloseAllowanceByNotOperator() public {
         address[] memory allowanceTokenList = new address[](1);
         allowanceTokenList[0] = address(usdt);
 
         vm.startPrank(user);
-        vm.expectRevert("not owner");
+        vm.expectRevert("RFQ: not operator");
         rfq.setAllowance(allowanceTokenList, address(this));
-        vm.expectRevert("not owner");
+        vm.expectRevert("RFQ: not operator");
         rfq.closeAllowance(allowanceTokenList, address(this));
         vm.stopPrank();
     }
@@ -202,8 +202,8 @@ contract RFQTest is StrategySharedSetup {
      *       Test: depositETH        *
      *********************************/
 
-    function testCannotDepositETHByNotOwner() public {
-        vm.expectRevert("not owner");
+    function testCannotDepositETHByNotOperator() public {
+        vm.expectRevert("RFQ: not operator");
         vm.prank(user);
         rfq.depositETH();
     }
@@ -220,9 +220,9 @@ contract RFQTest is StrategySharedSetup {
      *     Test: setFeeCollector     *
      *********************************/
 
-    function testCannotSetFeeCollectorByNotOwner() public {
+    function testCannotSetFeeCollectorByNotOperator() public {
         vm.prank(user);
-        vm.expectRevert("not owner");
+        vm.expectRevert("RFQ: not operator");
         rfq.setFeeCollector(user);
     }
 

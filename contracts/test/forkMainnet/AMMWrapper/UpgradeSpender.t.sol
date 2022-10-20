@@ -4,14 +4,14 @@ pragma solidity 0.7.6;
 import "contracts-test/forkMainnet/AMMWrapper/Setup.t.sol";
 
 contract TestAMMWrapperUpgradeSpender is TestAMMWrapper {
-    function testCannotUpgradeByNotOwner() public {
-        vm.expectRevert("not owner");
+    function testCannotUpgradeByNotOperator() public {
+        vm.expectRevert("AMMWrapper: not the operator");
         vm.prank(user);
         ammWrapper.upgradeSpender(user);
     }
 
     function testCannotUpgradeToZeroAddress() public {
-        vm.expectRevert("Strategy: spender can not be zero address");
+        vm.expectRevert("AMMWrapper: spender can not be zero address");
         ammWrapper.upgradeSpender(address(0));
     }
 

@@ -53,15 +53,7 @@ contract TestAMMWrapper is StrategySharedSetup {
         // Deploy and Setup Spender, AllowanceTarget, UserProxy, Tokenlon,
         // PermanentStorage, ProxyPermanentStorage, AMMWrapper contracts
         setUpSystemContracts();
-        ammQuoter = new AMMQuoter(
-            UNISWAP_V2_ADDRESS,
-            UNISWAP_V3_ADDRESS,
-            UNISWAP_V3_QUOTER_ADDRESS,
-            SUSHISWAP_ADDRESS,
-            BALANCER_V2_ADDRESS,
-            IPermanentStorage(permanentStorage),
-            address(weth)
-        );
+        ammQuoter = new AMMQuoter(IPermanentStorage(permanentStorage), address(weth));
         address[] memory relayerListAddress = new address[](1);
         relayerListAddress[0] = relayer;
         bool[] memory relayerListBool = new bool[](1);
@@ -101,11 +93,11 @@ contract TestAMMWrapper is StrategySharedSetup {
     function _deployStrategyAndUpgrade() internal override returns (address) {
         ammWrapper = new AMMWrapper(
             address(this), // This contract would be the operator
-            address(userProxy),
-            address(weth),
-            address(permanentStorage),
-            address(spender),
             DEFAULT_FEE_FACTOR,
+            address(userProxy),
+            ISpender(address(spender)),
+            permanentStorage,
+            IWETH(address(weth)),
             UNISWAP_V2_ADDRESS,
             SUSHISWAP_ADDRESS,
             feeCollector
