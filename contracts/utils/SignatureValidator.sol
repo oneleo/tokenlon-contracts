@@ -4,6 +4,8 @@ pragma solidity 0.7.6;
 import "../interfaces/IERC1271Wallet.sol";
 import "./LibBytes.sol";
 
+import "forge-std/console2.sol";
+
 interface IWallet {
     /// @dev Verifies that a signature is valid.
     /// @param hash Message hash that is signed.
@@ -65,6 +67,9 @@ contract SignatureValidator {
         bytes memory _data,
         bytes memory _sig
     ) public view returns (bool isValid) {
+        console2.logString("---------- isValidSignature _hash----------");
+        console2.logBytes(_sig);
+
         require(_sig.length > 0, "SignatureValidator#isValidSignature: length greater than 0 required");
 
         require(_signerAddress != address(0x0), "SignatureValidator#isValidSignature: invalid signer");
