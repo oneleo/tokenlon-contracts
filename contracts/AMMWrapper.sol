@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.7.6;
+pragma abicoder v2;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
@@ -16,6 +17,7 @@ import "./interfaces/IPermanentStorage.sol";
 import "./utils/StrategyBase.sol";
 import "./utils/AMMLibEIP712.sol";
 import "./utils/BaseLibEIP712.sol";
+import "./utils/SpenderLibEIP712.sol";
 import "./utils/LibConstant.sol";
 import "./utils/SignatureValidator.sol";
 
@@ -114,30 +116,17 @@ contract AMMWrapper is IAMMWrapper, StrategyBase, ReentrancyGuard, BaseLibEIP712
      *                   External functions                      *
      *************************************************************/
     function trade(
-        address _makerAddr,
-        address _takerAssetAddr,
-        address _makerAssetAddr,
-        uint256 _takerAssetAmount,
-        uint256 _makerAssetAmount,
+        AMMLibEIP712.Order calldata order,
+        SpenderLibEIP712.SpendWithPermit calldata _spendTakerAssetToAMM,
         uint256 _feeFactor,
-        address _userAddr,
-        address payable _receiverAddr,
-        uint256 _salt,
-        uint256 _deadline,
-        bytes calldata _sig
+        bytes calldata _sig,
+        bytes calldata _spendTakerAssetToAMMSig
     ) external payable override nonReentrant onlyUserProxy returns (uint256) {
-        AMMLibEIP712.Order memory order = AMMLibEIP712.Order(
-            _makerAddr,
-            _takerAssetAddr,
-            _makerAssetAddr,
-            _takerAssetAmount,
-            _makerAssetAmount,
-            _userAddr,
-            _receiverAddr,
-            _salt,
-            _deadline
-        );
         require(order.deadline >= block.timestamp, "AMMWrapper: expired order");
+
+        // Check the spender deadline and RFQ address
+        require(_spendTakerAssetToAMM.expiry >= block.timestamp, "AMMWrapper: expired taker spender");
+        require(_spendTakerAssetToAMM.requester == address(this), "AMMWrapper: invalid AMMWrapper address");
 
         // These variables are copied straight from function parameters and
         // used to bypass stack too deep error.
@@ -165,7 +154,12 @@ contract AMMWrapper is IAMMWrapper, StrategyBase, ReentrancyGuard, BaseLibEIP712
 
         txMetaData.transactionHash = _verify(order, _sig);
 
-        _prepare(order, internalTxData);
+        _prepare({
+            _order: order,
+            _spendTakerAssetToAMM: _spendTakerAssetToAMM,
+            _internalTxData: internalTxData,
+            _spendTakerAssetToAMMSig: _spendTakerAssetToAMMSig
+        });
 
         {
             // Set min amount for swap = _order.makerAssetAmount * (10000 / (10000 - feeFactor))
@@ -231,7 +225,12 @@ contract AMMWrapper is IAMMWrapper, StrategyBase, ReentrancyGuard, BaseLibEIP712
      * @dev internal function of `trade`.
      * It executes the swap on chosen AMM.
      */
-    function _prepare(AMMLibEIP712.Order memory _order, InternalTxData memory _internalTxData) internal {
+    function _prepare(
+        AMMLibEIP712.Order memory _order,
+        SpenderLibEIP712.SpendWithPermit memory _spendTakerAssetToAMM,
+        InternalTxData memory _internalTxData,
+        bytes memory _spendTakerAssetToAMMSig
+    ) internal {
         // Transfer asset from user and deposit to weth if needed
         if (_internalTxData.fromEth) {
             require(msg.value > 0, "AMMWrapper: msg.value is zero");
@@ -241,8 +240,25 @@ contract AMMWrapper is IAMMWrapper, StrategyBase, ReentrancyGuard, BaseLibEIP712
                 weth.deposit{ value: msg.value }();
             }
         } else {
-            // other ERC20 tokens
-            spender.spendFromUser(_order.userAddr, _order.takerAssetAddr, _order.takerAssetAmount);
+            // spender.spendFromUser(_order.userAddr, _order.takerAssetAddr, _order.takerAssetAmount);
+            require(
+                // Confirm that 'userAddr' sends 'takerAssetAmount' amount of 'takerAssetAddr' to 'address(this)'
+                _order.userAddr == _spendTakerAssetToAMM.user &&
+                    _order.takerAssetAddr == _spendTakerAssetToAMM.tokenAddr &&
+                    address(this) == _spendTakerAssetToAMM.recipient &&
+                    _order.takerAssetAmount == _spendTakerAssetToAMM.amount,
+                "AMMWrapper: taker spender information is incorrect"
+            );
+            spender.spendFromUserToWithPermit({
+                _tokenAddr: _spendTakerAssetToAMM.tokenAddr,
+                _requester: _spendTakerAssetToAMM.requester,
+                _user: _spendTakerAssetToAMM.user,
+                _recipient: _spendTakerAssetToAMM.recipient,
+                _amount: _spendTakerAssetToAMM.amount,
+                _salt: _spendTakerAssetToAMM.salt,
+                _expiry: _spendTakerAssetToAMM.expiry,
+                _spendWithPermitSig: _spendTakerAssetToAMMSig
+            });
         }
     }
 

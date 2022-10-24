@@ -6,6 +6,8 @@ import "contracts/interfaces/IL2Deposit.sol";
 import "contracts-test/forkMainnet/L2Deposit/Setup.t.sol";
 import "contracts-test/utils/BalanceSnapshot.sol";
 
+import "forge-std/console2.sol";
+
 interface IArbitrumBridge {
     function delayedMessageCount() external view returns (uint256);
 }
@@ -17,6 +19,7 @@ contract TestL2DepositTopUp is TestL2Deposit {
     uint256 arbMaxGas = 1e6;
     uint256 arbGasPriceBid = 1e6;
 
+    /* 我要的 待會再測
     function testCannotDepositIfExpired() public {
         // overwrite expiry
         DEFAULT_DEPOSIT.expiry = block.timestamp;
@@ -36,51 +39,51 @@ contract TestL2DepositTopUp is TestL2Deposit {
         vm.expectRevert("L2Deposit: Invalid deposit signature");
         userProxy.toL2Deposit(payload);
     }
+*/
+    // function testArbitrumDeposit() public {
+    //     BalanceSnapshot.Snapshot memory userL1TokenBal = BalanceSnapshot.take(user, DEFAULT_DEPOSIT.l1TokenAddr);
 
-    function testArbitrumDeposit() public {
-        BalanceSnapshot.Snapshot memory userL1TokenBal = BalanceSnapshot.take(user, DEFAULT_DEPOSIT.l1TokenAddr);
+    //     // overwrite deposit data with encoded arbitrum specific params
+    //     DEFAULT_DEPOSIT.data = abi.encode(arbMaxSubmissionCost, arbMaxGas, arbGasPriceBid);
 
-        // overwrite deposit data with encoded arbitrum specific params
-        DEFAULT_DEPOSIT.data = abi.encode(arbMaxSubmissionCost, arbMaxGas, arbGasPriceBid);
+    //     // compose payload with signature
+    //     bytes memory sig = _signDeposit(userPrivateKey, DEFAULT_DEPOSIT);
+    //     bytes memory payload = abi.encodeWithSelector(L2Deposit.deposit.selector, IL2Deposit.DepositParams(DEFAULT_DEPOSIT, sig));
+    //     uint256 callValue = arbMaxSubmissionCost + (arbMaxGas * arbGasPriceBid);
 
-        // compose payload with signature
-        bytes memory sig = _signDeposit(userPrivateKey, DEFAULT_DEPOSIT);
-        bytes memory payload = abi.encodeWithSelector(L2Deposit.deposit.selector, IL2Deposit.DepositParams(DEFAULT_DEPOSIT, sig));
-        uint256 callValue = arbMaxSubmissionCost + (arbMaxGas * arbGasPriceBid);
+    //     vm.expectEmit(true, true, true, true);
+    //     uint256 seqNum = IArbitrumBridge(ARBITRUM_L1_BRIDGE_ADDR).delayedMessageCount();
+    //     console.logUint(seqNum);
+    //     emit Deposited(
+    //         DEFAULT_DEPOSIT.l2Identifier,
+    //         DEFAULT_DEPOSIT.l1TokenAddr,
+    //         DEFAULT_DEPOSIT.l2TokenAddr,
+    //         DEFAULT_DEPOSIT.sender,
+    //         DEFAULT_DEPOSIT.recipient,
+    //         DEFAULT_DEPOSIT.amount,
+    //         DEFAULT_DEPOSIT.data,
+    //         abi.encode(seqNum)
+    //     );
+    //     userProxy.toL2Deposit{ value: callValue }(payload);
 
-        vm.expectEmit(true, true, true, true);
-        uint256 seqNum = IArbitrumBridge(ARBITRUM_L1_BRIDGE_ADDR).delayedMessageCount();
-        console.logUint(seqNum);
-        emit Deposited(
-            DEFAULT_DEPOSIT.l2Identifier,
-            DEFAULT_DEPOSIT.l1TokenAddr,
-            DEFAULT_DEPOSIT.l2TokenAddr,
-            DEFAULT_DEPOSIT.sender,
-            DEFAULT_DEPOSIT.recipient,
-            DEFAULT_DEPOSIT.amount,
-            DEFAULT_DEPOSIT.data,
-            abi.encode(seqNum)
-        );
-        userProxy.toL2Deposit{ value: callValue }(payload);
+    //     userL1TokenBal.assertChange(-int256(DEFAULT_DEPOSIT.amount));
+    // }
 
-        userL1TokenBal.assertChange(-int256(DEFAULT_DEPOSIT.amount));
-    }
+    // function testCannotReplayDeposit() public {
+    //     // overwrite deposit data with encoded arbitrum specific params
+    //     DEFAULT_DEPOSIT.data = abi.encode(arbMaxSubmissionCost, arbMaxGas, arbGasPriceBid);
 
-    function testCannotReplayDeposit() public {
-        // overwrite deposit data with encoded arbitrum specific params
-        DEFAULT_DEPOSIT.data = abi.encode(arbMaxSubmissionCost, arbMaxGas, arbGasPriceBid);
+    //     // compose payload with signature
+    //     bytes memory sig = _signDeposit(userPrivateKey, DEFAULT_DEPOSIT);
+    //     bytes memory payload = abi.encodeWithSelector(L2Deposit.deposit.selector, IL2Deposit.DepositParams(DEFAULT_DEPOSIT, sig));
+    //     uint256 callValue = arbMaxSubmissionCost + (arbMaxGas * arbGasPriceBid);
 
-        // compose payload with signature
-        bytes memory sig = _signDeposit(userPrivateKey, DEFAULT_DEPOSIT);
-        bytes memory payload = abi.encodeWithSelector(L2Deposit.deposit.selector, IL2Deposit.DepositParams(DEFAULT_DEPOSIT, sig));
-        uint256 callValue = arbMaxSubmissionCost + (arbMaxGas * arbGasPriceBid);
+    //     userProxy.toL2Deposit{ value: callValue }(payload);
 
-        userProxy.toL2Deposit{ value: callValue }(payload);
-
-        // should revert if payload relayed
-        vm.expectRevert("PermanentStorage: L2 deposit seen before");
-        userProxy.toL2Deposit{ value: callValue }(payload);
-    }
+    //     // should revert if payload relayed
+    //     vm.expectRevert("PermanentStorage: L2 deposit seen before");
+    //     userProxy.toL2Deposit{ value: callValue }(payload);
+    // }
 
     function testCannotDepositInvalidArbitrumToken() public {
         // overwrite l2TokenAddr with USDC address
@@ -91,27 +94,40 @@ contract TestL2DepositTopUp is TestL2Deposit {
 
         // compose payload with signature
         bytes memory sig = _signDeposit(userPrivateKey, DEFAULT_DEPOSIT);
-        bytes memory payload = abi.encodeWithSelector(L2Deposit.deposit.selector, IL2Deposit.DepositParams(DEFAULT_DEPOSIT, sig));
+        // bytes memory payload = abi.encodeWithSelector(L2Deposit.deposit.selector, DepositParams(DEFAULT_DEPOSIT, sig));
+        bytes memory payload;
+        {
+            _setDefaultSpenderFromDeposit({ defaultDeposit: DEFAULT_DEPOSIT });
+            SpenderLibEIP712.SpendWithPermit memory spendL1TokenToL2Deposit = DEFAULT_SPEND_L1TOKEN_TO_L2DEPOSIT;
+            bytes memory spendL1TokenToL2DepositSig = _signSpendWithPermit(userPrivateKey, spendL1TokenToL2Deposit, SignatureValidator.SignatureType.EIP712);
+            // DepositParams memory d = DepositParams(DEFAULT_DEPOSIT, spendL1TokenToL2Deposit, sig, spendL1TokenToL2DepositSig);
+            IL2Deposit.DepositParams memory d = IL2Deposit.DepositParams(DEFAULT_DEPOSIT, spendL1TokenToL2Deposit, sig, spendL1TokenToL2DepositSig);
+
+            payload = abi.encodeWithSelector(l2Deposit.deposit.selector, d);
+        }
+
         uint256 callValue = arbMaxSubmissionCost + (arbMaxGas * arbGasPriceBid);
 
         vm.expectRevert("L2Deposit: Incorrect L2 token address");
+        console2.logString("---------- Y ----------");
         userProxy.toL2Deposit{ value: callValue }(payload);
+        console2.logString("---------- Z ----------");
     }
 
-    function testCannotDepositInvalidArbitrumETHAmount() public {
-        // overwrite deposit data with encoded arbitrum specific params
-        DEFAULT_DEPOSIT.data = abi.encode(arbMaxSubmissionCost, arbMaxGas, arbGasPriceBid);
+    // function testCannotDepositInvalidArbitrumETHAmount() public {
+    //     // overwrite deposit data with encoded arbitrum specific params
+    //     DEFAULT_DEPOSIT.data = abi.encode(arbMaxSubmissionCost, arbMaxGas, arbGasPriceBid);
 
-        // compose payload with signature
-        bytes memory sig = _signDeposit(userPrivateKey, DEFAULT_DEPOSIT);
-        bytes memory payload = abi.encodeWithSelector(L2Deposit.deposit.selector, IL2Deposit.DepositParams(DEFAULT_DEPOSIT, sig));
+    //     // compose payload with signature
+    //     bytes memory sig = _signDeposit(userPrivateKey, DEFAULT_DEPOSIT);
+    //     bytes memory payload = abi.encodeWithSelector(L2Deposit.deposit.selector, IL2Deposit.DepositParams(DEFAULT_DEPOSIT, sig));
 
-        // compose inbox revert data with defined error
-        uint256 l2Callvalue = 0; // l2 call value 0 by default
-        uint256 l1Cost = arbMaxSubmissionCost + l2Callvalue + (arbMaxGas * arbGasPriceBid);
-        // Sig : error InsufficientValue(uint256 expected, uint256 actual)
-        bytes memory revertData = abi.encodeWithSelector(0x7040b58c, l1Cost, 1);
-        vm.expectRevert(revertData);
-        userProxy.toL2Deposit{ value: 1 }(payload);
-    }
+    //     // compose inbox revert data with defined error
+    //     uint256 l2Callvalue = 0; // l2 call value 0 by default
+    //     uint256 l1Cost = arbMaxSubmissionCost + l2Callvalue + (arbMaxGas * arbGasPriceBid);
+    //     // Sig : error InsufficientValue(uint256 expected, uint256 actual)
+    //     bytes memory revertData = abi.encodeWithSelector(0x7040b58c, l1Cost, 1);
+    //     vm.expectRevert(revertData);
+    //     userProxy.toL2Deposit{ value: 1 }(payload);
+    // }
 }

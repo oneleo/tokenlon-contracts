@@ -9,7 +9,7 @@ import "contracts-test/utils/BalanceSnapshot.sol";
 
 contract TestL2DepositOptimism is TestL2Deposit {
     using BalanceSnapshot for BalanceSnapshot.Snapshot;
-
+    /* 我要的 待會再測
     uint32 optL2Gas = 1e6;
 
     function testOptimismDeposit() public {
@@ -43,4 +43,5 @@ contract TestL2DepositOptimism is TestL2Deposit {
 
         userL1TokenBal.assertChange(-int256(DEFAULT_DEPOSIT.amount));
     }
+    */
 }

@@ -13,6 +13,7 @@ import "./interfaces/IPermanentStorage.sol";
 import "./interfaces/ISpender.sol";
 import "./interfaces/IUniswapRouterV2.sol";
 import "./utils/AMMLibEIP712.sol";
+import "./utils/SpenderLibEIP712.sol";
 import "./utils/LibBytes.sol";
 import "./utils/LibConstant.sol";
 import "./utils/LibUniswapV3.sol";
@@ -55,10 +56,14 @@ contract AMMWrapperWithPath is IAMMWrapperWithPath, AMMWrapper {
         AMMLibEIP712.Order calldata _order,
         uint256 _feeFactor,
         bytes calldata _sig,
-        bytes calldata _makerSpecificData,
+        GroupedVars calldata _groupedVars,
         address[] calldata _path
     ) external payable override nonReentrant onlyUserProxy returns (uint256) {
         require(_order.deadline >= block.timestamp, "AMMWrapper: expired order");
+
+        // Check the spender deadline and RFQ address
+        require(_groupedVars._spendTakerAssetToAMM.expiry >= block.timestamp, "AMMWrapperWithPath: expired taker spender");
+        require(_groupedVars._spendTakerAssetToAMM.requester == address(this), "AMMWrapperWithPath: invalid AMMWrapperWithPath address");
 
         // These variables are copied straight from function parameters and
         // used to bypass stack too deep error.
@@ -66,7 +71,7 @@ contract AMMWrapperWithPath is IAMMWrapperWithPath, AMMWrapper {
         InternalTxData memory internalTxData;
         txMetaData.feeFactor = uint16(_feeFactor);
         txMetaData.relayed = permStorage.isRelayerValid(tx.origin);
-        internalTxData.makerSpecificData = _makerSpecificData;
+        internalTxData.makerSpecificData = _groupedVars._makerSpecificData;
         internalTxData.path = _path;
         if (!txMetaData.relayed) {
             // overwrite feeFactor with defaultFeeFactor if not from valid relayer
@@ -88,7 +93,12 @@ contract AMMWrapperWithPath is IAMMWrapperWithPath, AMMWrapper {
 
         txMetaData.transactionHash = _verify(_order, _sig);
 
-        _prepare(_order, internalTxData);
+        _prepare({
+            _order: _order,
+            _spendTakerAssetToAMM: _groupedVars._spendTakerAssetToAMM,
+            _internalTxData: internalTxData,
+            _spendTakerAssetToAMMSig: _groupedVars._spendTakerAssetToAMMSig
+        });
 
         {
             // Set min amount for swap = _order.makerAssetAmount * (10000 / (10000 - feeFactor))

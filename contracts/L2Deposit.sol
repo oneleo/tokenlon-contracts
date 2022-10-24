@@ -17,6 +17,8 @@ import "./utils/Ownable.sol";
 import "./utils/L2DepositLibEIP712.sol";
 import "./utils/SignatureValidator.sol";
 
+import "forge-std/console2.sol";
+
 contract L2Deposit is IL2Deposit, StrategyBase, ReentrancyGuard, BaseLibEIP712, SignatureValidator {
     using SafeERC20 for IERC20;
 
@@ -38,7 +40,12 @@ contract L2Deposit is IL2Deposit, StrategyBase, ReentrancyGuard, BaseLibEIP712, 
     }
 
     function deposit(IL2Deposit.DepositParams calldata _params) external payable override nonReentrant onlyUserProxy {
+        console2.logString("---------- A ----------");
         require(_params.deposit.expiry > block.timestamp, "L2Deposit: Deposit is expired");
+
+        // Check the spender deadline and RFQ address
+        require(_params.spendL1TokenToL2Deposit.expiry >= block.timestamp, "L2Deposit: expired sender spender");
+        require(_params.spendL1TokenToL2Deposit.requester == address(this), "L2Deposit: invalid L2Deposit address");
 
         bytes32 depositHash = getEIP712Hash(L2DepositLibEIP712._getDepositHash(_params.deposit));
         require(isValidSignature(_params.deposit.sender, depositHash, bytes(""), _params.depositSig), "L2Deposit: Invalid deposit signature");
@@ -47,7 +54,29 @@ contract L2Deposit is IL2Deposit, StrategyBase, ReentrancyGuard, BaseLibEIP712, 
         permStorage.setL2DepositSeen(depositHash);
 
         // Transfer token from sender to this contract
-        spender.spendFromUser(_params.deposit.sender, _params.deposit.l1TokenAddr, _params.deposit.amount);
+        // spender.spendFromUser(_params.deposit.sender, _params.deposit.l1TokenAddr, _params.deposit.amount);
+        console2.logString("---------- B ----------");
+        require(
+            // Confirm that 'sender' sends 'amount' amount of 'l1TokenAddr' to 'address(this)'
+            _params.deposit.sender == _params.spendL1TokenToL2Deposit.user &&
+                _params.deposit.l1TokenAddr == _params.spendL1TokenToL2Deposit.tokenAddr &&
+                address(this) == _params.spendL1TokenToL2Deposit.recipient &&
+                _params.deposit.amount == _params.spendL1TokenToL2Deposit.amount,
+            "L2Deposit: maker spender information is incorrect"
+        );
+        console2.logString("---------- C ----------");
+        spender.spendFromUserToWithPermit({
+            _tokenAddr: _params.spendL1TokenToL2Deposit.tokenAddr,
+            _requester: _params.spendL1TokenToL2Deposit.requester,
+            _user: _params.spendL1TokenToL2Deposit.user,
+            _recipient: _params.spendL1TokenToL2Deposit.recipient,
+            _amount: _params.spendL1TokenToL2Deposit.amount,
+            _salt: _params.spendL1TokenToL2Deposit.salt,
+            _expiry: _params.spendL1TokenToL2Deposit.expiry,
+            _spendWithPermitSig: _params.spendL1TokenToL2DepositSig
+        });
+
+        console2.logString("---------- D ----------");
 
         // Bypass stack too deep
         DepositInfo memory depositInfo = DepositInfo(

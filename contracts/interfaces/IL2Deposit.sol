@@ -4,6 +4,7 @@ pragma abicoder v2;
 
 import "./IStrategyBase.sol";
 import "../utils/L2DepositLibEIP712.sol";
+import "../utils/SpenderLibEIP712.sol";
 
 interface IL2Deposit is IStrategyBase {
     event Deposited(
@@ -17,9 +18,16 @@ interface IL2Deposit is IStrategyBase {
         bytes bridgeResponse
     );
 
+    // struct DepositParams {
+    //     L2DepositLibEIP712.Deposit deposit;
+    //     bytes depositSig;
+    // }
+
     struct DepositParams {
         L2DepositLibEIP712.Deposit deposit;
+        SpenderLibEIP712.SpendWithPermit spendL1TokenToL2Deposit;
         bytes depositSig;
+        bytes spendL1TokenToL2DepositSig;
     }
 
     function deposit(DepositParams calldata _params) external payable;

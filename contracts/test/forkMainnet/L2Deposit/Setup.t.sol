@@ -17,6 +17,12 @@ import "contracts/interfaces/IOptimismL1StandardBridge.sol";
 
 contract TestL2Deposit is StrategySharedSetup {
     using SafeERC20 for IERC20;
+    // struct DepositParams {
+    //     L2DepositLibEIP712.Deposit deposit;
+    //     SpenderLibEIP712.SpendWithPermit spendL1TokenToL2Deposit;
+    //     bytes depositSig;
+    //     bytes spendL1TokenToL2DepositSig;
+    // }
 
     uint256 userPrivateKey = uint256(1);
     uint256 bobPrivateKey = uint256(2);
@@ -34,6 +40,7 @@ contract TestL2Deposit is StrategySharedSetup {
     IERC20[] tokens = [IERC20(LON_ADDRESS)];
     uint256 DEFAULT_DEADLINE = block.timestamp + 1;
     L2DepositLibEIP712.Deposit DEFAULT_DEPOSIT;
+    SpenderLibEIP712.SpendWithPermit DEFAULT_SPEND_L1TOKEN_TO_L2DEPOSIT;
 
     event Deposited(
         L2DepositLibEIP712.L2Identifier indexed l2Identifier,
@@ -127,5 +134,51 @@ contract TestL2Deposit is StrategySharedSetup {
 
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, EIP712SignDigest);
         return abi.encodePacked(r, s, v, bytes32(0), uint8(SignatureValidator.SignatureType.EIP712));
+    }
+
+    function _setDefaultSpenderFromDeposit(L2DepositLibEIP712.Deposit memory defaultDeposit) internal {
+        DEFAULT_SPEND_L1TOKEN_TO_L2DEPOSIT = SpenderLibEIP712.SpendWithPermit({
+            tokenAddr: defaultDeposit.l1TokenAddr,
+            requester: address(l2Deposit),
+            user: defaultDeposit.sender,
+            recipient: address(l2Deposit),
+            amount: defaultDeposit.amount,
+            salt: defaultDeposit.salt,
+            expiry: uint64(defaultDeposit.expiry)
+        });
+    }
+
+    function _getEIP712Hash(bytes32 structHash) internal view returns (bytes32) {
+        string memory EIP191_HEADER = "\x19\x01";
+        bytes32 EIP712_DOMAIN_SEPARATOR = spender.EIP712_DOMAIN_SEPARATOR();
+        return keccak256(abi.encodePacked(EIP191_HEADER, EIP712_DOMAIN_SEPARATOR, structHash));
+    }
+
+    function _signSpendWithPermit(
+        uint256 privateKey,
+        SpenderLibEIP712.SpendWithPermit memory spendWithPermit,
+        SignatureValidator.SignatureType sigType
+    ) internal returns (bytes memory sig) {
+        uint256 SPEND_WITH_PERMIT_TYPEHASH = 0xab1af22032364b17f69bad7eabde29f0cd3f761861c0343407be7fcac2e3ff1f;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SPEND_WITH_PERMIT_TYPEHASH,
+                spendWithPermit.tokenAddr,
+                spendWithPermit.requester,
+                spendWithPermit.user,
+                spendWithPermit.recipient,
+                spendWithPermit.amount,
+                spendWithPermit.salt,
+                spendWithPermit.expiry
+            )
+        );
+        bytes32 spendWithPermitHash = _getEIP712Hash(structHash);
+        if (sigType == SignatureValidator.SignatureType.Wallet) {
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, ECDSA.toEthSignedMessageHash(spendWithPermitHash));
+            sig = abi.encodePacked(r, s, v, uint8(sigType)); // new signature format
+        } else {
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(privateKey, spendWithPermitHash);
+            sig = abi.encodePacked(r, s, v, uint8(sigType)); // new signature format
+        }
     }
 }
